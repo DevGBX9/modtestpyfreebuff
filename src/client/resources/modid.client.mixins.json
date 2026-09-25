@@ -3,7 +3,8 @@
 	"package": "com.example.client.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"client": [
-		"ExampleClientMixin"
+		"ExampleClientMixin",
+		"HumanoidModelMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
