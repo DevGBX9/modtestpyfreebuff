@@ -9,7 +9,6 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.LivingEntity;
@@ -85,7 +84,7 @@ public final class ChargedPunchHandler {
 		// 1) Knockback: send the target flying away from the player.
 		Vec3 launch = direction.scale(KNOCKBACK_STRENGTH).add(0.0D, KNOCKBACK_LIFT, 0.0D);
 		target.addDeltaMovement(launch);
-		target.hurtServer(level, playerAttack(level, player), 8.0F);
+		target.hurtServer(level, level.damageSources().playerAttack(player), 8.0F);
 
 		level.playSound(null, target.blockPosition(), SoundEvents.PLAYER_ATTACK_CRIT, SoundSource.PLAYERS, 1.4F, 0.6F);
 		level.sendParticles(ParticleTypes.CRIT, target.getX(), target.getY(0.5D), target.getZ(), 20, 0.4D, 0.4D, 0.4D, 0.15D);
@@ -93,10 +92,6 @@ public final class ChargedPunchHandler {
 		// 2) Explosion shortly after the target has been launched.
 		Vec3 targetPos = target.position();
 		ServerTickScheduler.schedule(level, EXPLOSION_DELAY_TICKS, () -> explode(level, target, targetPos));
-	}
-
-	private static DamageSource playerAttack(ServerLevel level, ServerPlayer player) {
-		return level.getServer().resources().damageSources().playerAttack(player);
 	}
 
 	private static void explode(ServerLevel level, LivingEntity target, Vec3 pos) {
@@ -107,7 +102,8 @@ public final class ChargedPunchHandler {
 		// 3) Explosion at the target's position (TNT interaction, no fire).
 		level.explode(null, x, y, z, EXPLOSION_POWER, Level.ExplosionInteraction.TNT);
 
-		level.playSound(null, target.blockPosition(), SoundEvents.GENERIC_EXPLODE, SoundSource.PLAYERS, 3.0F, 1.0F);
+		// GENERIC_EXPLODE is a Holder<SoundEvent> in 26.3, so use the Holder overload.
+		level.playSound(null, x, y, z, SoundEvents.GENERIC_EXPLODE, SoundSource.PLAYERS, 3.0F, 1.0F);
 
 		// 4) Ground shockwave: dust ring around the impact + radial push.
 		applyShockwave(level, x, y, z);
