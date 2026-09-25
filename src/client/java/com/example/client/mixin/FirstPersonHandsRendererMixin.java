@@ -23,11 +23,19 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * into a wind-up pose (trembling at full charge) around the vanilla
  * rendering, and skip the vanilla swing transform. Every other case is
  * delegated to vanilla untouched.
+ *
+ * <p>Re-entrancy: the {@code @Invoker} call below re-enters
+ * {@code renderPlayerHand}, which would hit this very handler again and
+ * recurse forever (StackOverflowError). The {@link #modid$reentering} flag
+ * lets that inner call fall straight through to the vanilla body.
  */
 @Mixin(FirstPersonHandsAndItemsRenderer.class)
 public abstract class FirstPersonHandsRendererMixin {
 	@Unique
 	private static final float CHARGE_WINDUP_TIME = 20.0F; // ticks to reach full wind-up
+
+	@Unique
+	private boolean modid$reentering = false;
 
 	@Invoker("renderPlayerHand")
 	protected abstract void modid$invokeRenderPlayerHand(PoseStack poseStack, SubmitNodeCollector collector,
@@ -40,6 +48,10 @@ public abstract class FirstPersonHandsRendererMixin {
 	)
 	private void modid$chargeHandPose(PoseStack poseStack, SubmitNodeCollector collector, int renderId,
 			HumanoidArm arm, PlayerRenderState playerState, CallbackInfo ci) {
+		// Our own invoker call below re-enters here: run the vanilla body as-is.
+		if (this.modid$reentering) {
+			return;
+		}
 		if (!ChargeTracker.isCharging()) {
 			return; // vanilla behaviour for normal clicks and other hands
 		}
@@ -59,7 +71,12 @@ public abstract class FirstPersonHandsRendererMixin {
 		poseStack.rotateDegrees(Axis.YP, -25.0F * side * windup); // angle inward
 		poseStack.rotateDegrees(Axis.ZP, 15.0F * side * windup); // elbow-out tilt
 
-		modid$invokeRenderPlayerHand(poseStack, collector, renderId, arm, playerState);
+		this.modid$reentering = true;
+		try {
+			this.modid$invokeRenderPlayerHand(poseStack, collector, renderId, arm, playerState);
+		} finally {
+			this.modid$reentering = false;
+		}
 		poseStack.popPose();
 		ci.cancel();
 	}
