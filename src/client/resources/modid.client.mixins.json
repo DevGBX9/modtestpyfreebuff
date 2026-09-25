@@ -4,7 +4,8 @@
 	"compatibilityLevel": "JAVA_25",
 	"client": [
 		"ExampleClientMixin",
-		"HumanoidModelMixin"
+		"HumanoidModelMixin",
+		"FirstPersonHandsRendererMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
