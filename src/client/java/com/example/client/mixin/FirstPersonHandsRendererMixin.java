@@ -59,17 +59,20 @@ public abstract class FirstPersonHandsRendererMixin {
 		float progress = ChargeTracker.getChargeProgress();
 		float windup = Math.min(1.0F, progress * (CHARGE_WINDUP_TIME / (float) ChargeTracker.CHARGE_TICKS * 3.0F));
 		float age = playerState.avatarRenderState.ageInTicks;
-		float shake = progress >= 1.0F ? Mth.sin(age * 0.6F) * 0.04F : 0.0F;
+		// Keep the tremble tiny so the arm never leaves the frame.
+		float shake = progress >= 1.0F ? Mth.sin(age * 0.6F) * 2.5F : 0.0F;
 
 		boolean right = arm == HumanoidArm.RIGHT;
 		float side = right ? 1.0F : -1.0F;
 
 		poseStack.pushPose();
-		// Move the arm towards the center-back and rotate it into a wind-up.
-		poseStack.translate(0.35F * side, -0.45F, -0.32F);
-		poseStack.rotateDegrees(Axis.XP, 65.0F * windup + shake * 60.0F); // pull back
-		poseStack.rotateDegrees(Axis.YP, -25.0F * side * windup); // angle inward
-		poseStack.rotateDegrees(Axis.ZP, 15.0F * side * windup); // elbow-out tilt
+		// Gentle "cocking" motion in the spirit of vanilla eat/charge transforms:
+		// small lift and pull, tiny twists. Large rotations swing the arm across
+		// the camera near-plane and make it disappear entirely.
+		poseStack.translate(0.10F * side * windup, 0.08F * windup, 0.05F * windup);
+		poseStack.rotateDegrees(Axis.XP, 25.0F * windup + shake);
+		poseStack.rotateDegrees(Axis.YP, -12.0F * side * windup);
+		poseStack.rotateDegrees(Axis.ZP, 7.0F * side * windup);
 
 		this.modid$reentering = true;
 		try {

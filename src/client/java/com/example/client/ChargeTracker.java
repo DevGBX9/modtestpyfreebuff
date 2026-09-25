@@ -9,6 +9,7 @@ import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.Mth;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -73,9 +74,15 @@ public final class ChargeTracker {
 		boolean justReleased = !down && wasAttackDown;
 		wasAttackDown = down;
 
+		// The charge only engages when the crosshair points at an entity or at
+		// empty space (MISS). Pointing at a block keeps vanilla block-breaking.
+		if (justPressed && !crosshairAllowsCharge(client)) {
+			justPressed = false;
+		}
+
 		if (justPressed) {
 			chargeTicks = 0;
-		} else if (down) {
+		} else if (down && chargeTicks >= 0) {
 			chargeTicks++;
 		}
 
@@ -100,6 +107,14 @@ public final class ChargeTracker {
 		if (chargeTicks > CHARGE_TICKS && chargeTicks % 5 == 0) {
 			spawnChargeParticles(player);
 		}
+	}
+
+	/**
+	 * Charge is allowed when the crosshair targets an entity or nothing at all
+	 * (sky/air) - a block hit means the player wants to mine, not punch.
+	 */
+	private static boolean crosshairAllowsCharge(Minecraft client) {
+		return client.hitResult == null || client.hitResult.getType() != HitResult.Type.BLOCK;
 	}
 
 	private static void fireChargedPunch(Minecraft client, LocalPlayer player) {

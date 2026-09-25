@@ -3,6 +3,8 @@ package com.example;
 import com.example.network.ChargedPunchPayload;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -13,8 +15,12 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.component.SwingAnimation;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -22,12 +28,17 @@ import net.minecraft.world.phys.Vec3;
  *
  * <ol>
  *   <li>massive knockback away from the player,</li>
- *   <li>the target flies backwards until it has travelled
- *       {@link #EXPLODE_TRAVEL_DISTANCE} blocks (tick-count safety cap applies),</li>
+ *   <li>the target flies backwards leaving a debris trail until it has
+ *       travelled {@link #EXPLODE_TRAVEL_DISTANCE} blocks (tick-count cap),</li>
  *   <li>it detonates in mid-flight,</li>
  *   <li>a ground shockwave pushes nearby entities (never the attacker),</li>
  *   <li>slowness and weakness are applied to the victim only.</li>
  * </ol>
+ *
+ * <p>The punch also fires into blocks or empty air: a server-side ray pick
+ * picks the nearest of entity/block, and a block or miss simply detonates at
+ * the impact point without a victim. Charging only engages when the client's
+ * crosshair is not on a block (so mining keeps working normally).</p>
  *
  * <p>All names verified against the unobfuscated 26.3 jars.
  */
@@ -38,6 +49,10 @@ public final class ChargedPunchHandler {
 	private static final double KNOCKBACK_LIFT = 0.55D;
 	/** How far (blocks) the target must fly before it detonates. */
 	private static final double EXPLODE_TRAVEL_DISTANCE = 3.5D;
+	/** Max punch reach from the eyes (server-side ray-pick). */
+	private static final double PUNCH_RANGE = 5.0D;
+	/** Ticks before a block/void impact detonates. */
+	private static final int IMPACT_DELAY_TICKS = 5;
 	/** Safety cap: detonate anyway after this many ticks. */
 	private static final int EXPLOSION_MAX_DELAY_TICKS = 40;
 	/** Explosion power (TNT is 4). */
@@ -62,24 +77,40 @@ public final class ChargedPunchHandler {
 
 	private static void executePunch(ServerPlayer player) {
 		ServerLevel level = player.level(); // ServerPlayer.level() returns ServerLevel in 26.3
-		LivingEntity target = findTarget(player);
 
 		// Swing the arm so the release feels responsive.
 		player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
 
+		// Server-authoritative ray pick: nearest of (entity, block) along the look
+		// ray. A block hit occludes entities behind it. The punch fires on any
+		// outcome: entity, block, or empty air.
+		Vec3 eye = player.getEyePosition();
+		Vec3 look = player.getLookAngle();
+		Vec3 end = eye.add(look.scale(PUNCH_RANGE));
+		BlockHitResult blockHit = level.clip(new ClipContext(eye, end,
+				ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player));
+		double blockDist = blockHit.getType() == HitResult.Type.MISS
+				? PUNCH_RANGE
+				: eye.distanceTo(blockHit.getLocation());
+
+		LivingEntity target = findTarget(player, blockDist);
+
 		if (target == null) {
-			// Missed: a smaller "air punch" burst so it still feels powerful.
-			Vec3 look = player.getLookAngle();
-			Vec3 pos = player.getEyePosition().add(look.scale(2.0D));
-			level.sendParticles(ParticleTypes.SWEEP_ATTACK, pos.x, pos.y, pos.z, 1, 0.0D, 0.0D, 0.0D, 0.0D);
-			level.playSound(null, player.blockPosition(), SoundEvents.PLAYER_ATTACK_SWEEP, SoundSource.PLAYERS, 1.0F, 0.7F);
+			// No entity: the punch lands where the crosshair pointed - a block
+			// face or empty space - and detonates there after a short beat.
+			Vec3 impact = blockHit.getType() == HitResult.Type.MISS
+					? end
+					: blockHit.getLocation().add(look.scale(0.25D));
+			level.playSound(null, BlockPos.containing(impact), SoundEvents.PLAYER_ATTACK_SWEEP, SoundSource.PLAYERS, 1.2F, 0.7F);
+			Vec3 impactPos = impact;
+			ServerTickScheduler.schedule(level, IMPACT_DELAY_TICKS, () ->
+					explodeAtPoint(level, impactPos, player));
 			return;
 		}
 
 		Vec3 direction = target.position().subtract(player.position());
 		direction = new Vec3(direction.x, 0.0D, direction.z);
 		if (direction.lengthSqr() < 1.0E-4D) {
-			Vec3 look = player.getLookAngle();
 			direction = new Vec3(look.x, 0.0D, look.z);
 		}
 		direction = direction.normalize();
@@ -112,6 +143,9 @@ public final class ChargedPunchHandler {
 		double travelled = targetGone ? Double.MAX_VALUE : target.position().distanceTo(startPos);
 
 		if (!targetGone && travelled < EXPLODE_TRAVEL_DISTANCE && ticksWaited < EXPLOSION_MAX_DELAY_TICKS) {
+			// Debris trail: block-dust wake along the flight path, synced with the
+			// target's position - reads as the ground/air tearing behind them.
+			spawnDebrisTrail(level, target);
 			ServerTickScheduler.schedule(level, 1, () -> trackAndExplode(level, target, startPos, ticksWaited + 1, attacker));
 			return;
 		}
@@ -120,12 +154,49 @@ public final class ChargedPunchHandler {
 		explode(level, target, detonationPos, attacker);
 	}
 
-	private static void explode(ServerLevel level, LivingEntity target, Vec3 pos, ServerPlayer attacker) {
-		double x = target.isRemoved() ? pos.x : target.getX();
-		double y = target.isRemoved() ? pos.y : target.getY(0.5D);
-		double z = target.isRemoved() ? pos.z : target.getZ();
+	/**
+	 * Ground-debris wake behind the flying target: dust from whatever block is
+	 * below them, plus a thin crit/streak line. Runs every tracked tick.
+	 */
+	private static void spawnDebrisTrail(ServerLevel level, LivingEntity target) {
+		double x = target.getX();
+		double y = target.getY();
+		double z = target.getZ();
 
-		// 3) Explosion at the target's position (TNT interaction, no fire).
+		// Dust from the block directly under the flying target ("torn ground").
+		BlockPos ground = BlockPos.containing(x, y - 0.5D, z);
+		BlockState groundState = level.getBlockState(ground);
+		if (!groundState.isAir()) {
+			BlockParticleOption debris = new BlockParticleOption(ParticleTypes.BLOCK, groundState);
+			level.sendParticles(debris, x, y, z, 8, 0.35D, 0.1D, 0.35D, 0.15D);
+		} else {
+			level.sendParticles(ParticleTypes.POOF, x, y, z, 4, 0.3D, 0.05D, 0.3D, 0.02D);
+		}
+
+		// Streak line behind the target (trail through the air).
+		level.sendParticles(ParticleTypes.CRIT, x, y + 0.3D, z, 3, 0.1D, 0.1D, 0.1D, 0.02D);
+	}
+
+	/** Explosion at a raw impact point (block face or empty air) - no victim. */
+	private static void explodeAtPoint(ServerLevel level, Vec3 pos, ServerPlayer attacker) {
+		detonate(level, null, pos, attacker);
+	}
+
+	private static void explode(ServerLevel level, LivingEntity target, Vec3 pos, ServerPlayer attacker) {
+		Vec3 center = target.isRemoved() ? pos : target.position();
+		detonate(level, target, center, attacker);
+	}
+
+	/**
+	 * Core detonation: explosion at {@code center}, ground shockwave pushing
+	 * nearby entities (never the attacker), and victim-only debuffs.
+	 */
+	private static void detonate(ServerLevel level, LivingEntity victim, Vec3 center, ServerPlayer attacker) {
+		double x = center.x;
+		double y = center.y;
+		double z = center.z;
+
+		// 3) Explosion at the impact point (TNT interaction, no fire).
 		level.explode(null, x, y, z, EXPLOSION_POWER, Level.ExplosionInteraction.TNT);
 
 		// GENERIC_EXPLODE is a Holder<SoundEvent> in 26.3, so use the Holder overload.
@@ -134,9 +205,13 @@ public final class ChargedPunchHandler {
 		// 4) Ground shockwave: dust ring around the impact + radial push.
 		applyShockwave(level, x, y, z, attacker);
 
-		// 5) Debuffs: slowness and weakness on the victim only - never the player
-		// and never bystanders.
-		applyDebuffs(level, target, x, y, z);
+		// 5) Debuffs: slowness and weakness on the punched victim only - never
+		// the player and never bystanders. No victim when the punch hit a
+		// block or empty air.
+		if (victim != null && !victim.isRemoved() && victim.isAlive()) {
+			victim.addEffect(new MobEffectInstance(MobEffects.SLOWNESS, DEBUFF_TICKS, 2));
+			victim.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, DEBUFF_TICKS, 1));
+		}
 	}
 
 	private static void applyShockwave(ServerLevel level, double x, double y, double z, ServerPlayer attacker) {
@@ -169,22 +244,14 @@ public final class ChargedPunchHandler {
 		}
 	}
 
-	private static void applyDebuffs(ServerLevel level, LivingEntity victim, double x, double y, double z) {
-		if (victim.isRemoved() || !victim.isAlive()) {
-			return;
-		}
-		victim.addEffect(new MobEffectInstance(MobEffects.SLOWNESS, DEBUFF_TICKS, 2));
-		victim.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, DEBUFF_TICKS, 1));
-	}
-
-	private static LivingEntity findTarget(ServerPlayer player) {
+	private static LivingEntity findTarget(ServerPlayer player, double maxDistance) {
 		ServerLevel level = player.level();
 		Vec3 eye = player.getEyePosition();
 		Vec3 look = player.getLookAngle();
 
 		LivingEntity best = null;
 		double bestScore = Double.MAX_VALUE;
-		double reach = 3.5D;
+		double reach = Math.min(3.5D, maxDistance);
 
 		for (LivingEntity entity : level.getEntitiesOfClass(LivingEntity.class,
 				player.getBoundingBox().inflate(reach), e -> e.isAlive() && e != player)) {
