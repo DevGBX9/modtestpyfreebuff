@@ -9,9 +9,11 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -23,9 +25,11 @@ import net.minecraft.world.phys.Vec3;
  *   <li>massive knockback away from the player,</li>
  *   <li>a short delay while the target is flying backwards,</li>
  *   <li>an explosion at the target,</li>
- *   <li>a ground shockwave (dust/sweep particles around the impact),</li>
+ *   <li>a ground shockwave (dust ring around the impact),</li>
  *   <li>slowness and weakness on the victim and nearby entities.</li>
  * </ol>
+ *
+ * <p>All names verified against the unobfuscated 26.3 jars.
  */
 public final class ChargedPunchHandler {
 	/** Knockback multiplier applied before the explosion (compared to a vanilla hit). */
@@ -55,14 +59,14 @@ public final class ChargedPunchHandler {
 	}
 
 	private static void executePunch(ServerPlayer player) {
-		ServerLevel level = player.serverLevel();
+		ServerLevel level = player.level(); // ServerPlayer.level() returns ServerLevel in 26.3
 		LivingEntity target = findTarget(player);
 
 		// Swing the arm so the release feels responsive.
-		player.swing(InteractionHand.MAIN_HAND, true);
+		player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
 
 		if (target == null) {
-			// Missed: a weaker "air punch" burst so it still feels powerful.
+			// Missed: a smaller "air punch" burst so it still feels powerful.
 			Vec3 look = player.getLookAngle();
 			Vec3 pos = player.getEyePosition().add(look.scale(2.0D));
 			level.sendParticles(ParticleTypes.SWEEP_ATTACK, pos.x, pos.y, pos.z, 1, 0.0D, 0.0D, 0.0D, 0.0D);
@@ -80,11 +84,8 @@ public final class ChargedPunchHandler {
 
 		// 1) Knockback: send the target flying away from the player.
 		Vec3 launch = direction.scale(KNOCKBACK_STRENGTH).add(0.0D, KNOCKBACK_LIFT, 0.0D);
-		target.push(launch.x, launch.y, launch.z);
-		target.hurtMarked = true; // force velocity sync to clients
-
-		// Direct impact damage (for the death message attribution).
-		target.hurt(player.damageSources().playerAttack(player), 8.0F);
+		target.addDeltaMovement(launch);
+		target.hurtServer(level, playerAttack(level, player), 8.0F);
 
 		level.playSound(null, target.blockPosition(), SoundEvents.PLAYER_ATTACK_CRIT, SoundSource.PLAYERS, 1.4F, 0.6F);
 		level.sendParticles(ParticleTypes.CRIT, target.getX(), target.getY(0.5D), target.getZ(), 20, 0.4D, 0.4D, 0.4D, 0.15D);
@@ -94,20 +95,19 @@ public final class ChargedPunchHandler {
 		ServerTickScheduler.schedule(level, EXPLOSION_DELAY_TICKS, () -> explode(level, target, targetPos));
 	}
 
+	private static DamageSource playerAttack(ServerLevel level, ServerPlayer player) {
+		return level.getServer().resources().damageSources().playerAttack(player);
+	}
+
 	private static void explode(ServerLevel level, LivingEntity target, Vec3 pos) {
 		double x = target.isRemoved() ? pos.x : target.getX();
 		double y = target.isRemoved() ? pos.y : target.getY(0.5D);
 		double z = target.isRemoved() ? pos.z : target.getZ();
 
-		// 3) Explosion at the target's position.
-		level.explode(
-				null,
-				x, y, z,
-				EXPLOSION_POWER,
-				Level.ExplosionInteraction.TNT
-		);
+		// 3) Explosion at the target's position (TNT interaction, no fire).
+		level.explode(null, x, y, z, EXPLOSION_POWER, Level.ExplosionInteraction.TNT);
 
-		level.playSound(null, target.blockPosition(), SoundEvents.GENERIC_EXPLODE.value(), SoundSource.PLAYERS, 3.0F, 1.0F);
+		level.playSound(null, target.blockPosition(), SoundEvents.GENERIC_EXPLODE, SoundSource.PLAYERS, 3.0F, 1.0F);
 
 		// 4) Ground shockwave: dust ring around the impact + radial push.
 		applyShockwave(level, x, y, z);
@@ -140,8 +140,7 @@ public final class ChargedPunchHandler {
 			}
 			away = away.normalize();
 			double falloff = Math.max(0.25D, 1.0D - distance / SHOCKWAVE_RADIUS);
-			nearby.push(away.x * falloff, 0.35D * falloff, away.z * falloff);
-			nearby.hurtMarked = true;
+			nearby.addDeltaMovement(new Vec3(away.x * falloff, 0.35D * falloff, away.z * falloff));
 		}
 	}
 
@@ -149,13 +148,13 @@ public final class ChargedPunchHandler {
 		AABB box = new AABB(x - SHOCKWAVE_RADIUS, y - 2.0D, z - SHOCKWAVE_RADIUS,
 				x + SHOCKWAVE_RADIUS, y + 2.0D, z + SHOCKWAVE_RADIUS);
 		for (LivingEntity nearby : level.getEntitiesOfClass(LivingEntity.class, box, LivingEntity::isAlive)) {
-			nearby.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, DEBUFF_TICKS, 2));
+			nearby.addEffect(new MobEffectInstance(MobEffects.SLOWNESS, DEBUFF_TICKS, 2));
 			nearby.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, DEBUFF_TICKS, 1));
 		}
 	}
 
 	private static LivingEntity findTarget(ServerPlayer player) {
-		ServerLevel level = player.serverLevel();
+		ServerLevel level = player.level();
 		Vec3 eye = player.getEyePosition();
 		Vec3 look = player.getLookAngle();
 

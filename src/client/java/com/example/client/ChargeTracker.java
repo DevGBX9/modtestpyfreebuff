@@ -8,19 +8,22 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
 /**
  * Tracks the "hold left click to charge" mechanic on the client.
  *
  * <p>While the attack key is held the tracker counts up; at
- * {@link #CHARGE_TICKS} (3 seconds) the punch is fully charged: a bell-like
- * chime plays and enchantment particles start swirling around the player.
- * When the button is released while fully charged, a release burst plays and
- * a {@link ChargedPunchPayload} is sent to the server which performs the
+ * {@link #CHARGE_TICKS} (3 seconds) the punch is fully charged: a chime plays
+ * and enchantment particles start swirling around the player. When the button
+ * is released while fully charged, a release burst plays and a
+ * {@link ChargedPunchPayload} is sent to the server which performs the
  * knockback + explosion sequence.
  *
  * <p>Normal (short) clicks are completely unaffected.
+ *
+ * <p>All API names verified against the unobfuscated 26.3 client jar.
  */
 public final class ChargeTracker {
 	/** Full charge duration: 3 seconds = 60 ticks. */
@@ -55,12 +58,13 @@ public final class ChargeTracker {
 			return;
 		}
 
-		// Cancel the charge when a screen opens or the player dies.
-		if (client.screen != null || player.isDeadOrDying() || player.isSpectator()) {
+		// A released mouse = a screen is open (menu/inventory/chat): cancel the charge.
+		// Also cancel on death or spectator mode.
+		if (!client.mouseHandler.isMouseGrabbed() || player.isDeadOrDying() || player.isSpectator()) {
 			if (chargeTicks >= 0) {
 				reset();
 			}
-			wasAttackDown = client.options.keyAttack.isDown();
+			wasAttackDown = false;
 			return;
 		}
 
@@ -89,7 +93,7 @@ public final class ChargeTracker {
 
 		// Full-charge moment: chime + burst.
 		if (chargeTicks == CHARGE_TICKS) {
-			playReadyEffects(client, player);
+			playReadyEffects(player);
 		}
 
 		// While charged: swirling particles every 5 ticks.
@@ -103,17 +107,17 @@ public final class ChargeTracker {
 		Vec3 pos = player.position().add(0.0D, player.getBbHeight() * 0.6D, 0.0D);
 		player.level().addParticle(ParticleTypes.EXPLOSION, pos.x, pos.y, pos.z, 0.0D, 0.0D, 0.0D);
 		for (int i = 0; i < 12; i++) {
-			double angle = client.level.random.nextDouble() * Math.PI * 2;
+			double angle = player.level().getRandom().nextDouble() * Math.PI * 2;
 			player.level().addParticle(ParticleTypes.CRIT,
 					pos.x, pos.y, pos.z,
 					Math.cos(angle) * 0.3D, 0.1D, Math.sin(angle) * 0.3D);
 		}
-		player.level().playLocalSound(player.blockPosition(), SoundEvents.PLAYER_ATTACK_CRIT, SoundSource.PLAYERS, 1.2F, 0.5F, false);
+		player.playSound(SoundEvents.PLAYER_ATTACK_CRIT, 1.2F, 0.5F);
 
 		ClientPlayNetworking.send(ChargedPunchPayload.INSTANCE);
 	}
 
-	private static void playReadyEffects(Minecraft client, LocalPlayer player) {
+	private static void playReadyEffects(LocalPlayer player) {
 		Vec3 pos = player.position().add(0.0D, player.getBbHeight() * 0.6D, 0.0D);
 		for (int i = 0; i < 16; i++) {
 			double angle = (Math.PI * 2 * i) / 16;
@@ -121,20 +125,20 @@ public final class ChargeTracker {
 					pos.x + Math.cos(angle) * 0.7D, pos.y + 0.2D, pos.z + Math.sin(angle) * 0.7D,
 					-Math.cos(angle) * 0.15D, 0.1D, -Math.sin(angle) * 0.15D);
 		}
-		player.level().playLocalSound(player.blockPosition(), SoundEvents.PLAYER_LEVELUP, SoundSource.PLAYERS, 0.8F, 1.7F, false);
+		player.playSound(SoundEvents.PLAYER_LEVELUP, 0.8F, 1.7F);
 	}
 
 	private static void spawnChargeParticles(LocalPlayer player) {
 		Vec3 pos = player.position().add(0.0D, player.getBbHeight() * 0.6D, 0.0D);
 		player.level().addParticle(ParticleTypes.ENCHANTED_HIT,
-				pos.x + (player.level.random.nextDouble() - 0.5D) * 0.9D,
-				pos.y + (player.level.random.nextDouble() - 0.5D) * 0.7D,
-				pos.z + (player.level.random.nextDouble() - 0.5D) * 0.9D,
+				pos.x + (player.level().getRandom().nextDouble() - 0.5D) * 0.9D,
+				pos.y + (player.level().getRandom().nextDouble() - 0.5D) * 0.7D,
+				pos.z + (player.level().getRandom().nextDouble() - 0.5D) * 0.9D,
 				0.0D, 0.08D, 0.0D);
 		player.level().addParticle(ParticleTypes.CRIT,
-				pos.x + (player.level.random.nextDouble() - 0.5D) * 0.8D,
-				pos.y + (player.level.random.nextDouble() - 0.5D) * 0.6D,
-				pos.z + (player.level.random.nextDouble() - 0.5D) * 0.8D,
+				pos.x + (player.level().getRandom().nextDouble() - 0.5D) * 0.8D,
+				pos.y + (player.level().getRandom().nextDouble() - 0.5D) * 0.6D,
+				pos.z + (player.level().getRandom().nextDouble() - 0.5D) * 0.8D,
 				0.0D, 0.05D, 0.0D);
 	}
 
