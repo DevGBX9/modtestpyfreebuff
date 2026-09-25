@@ -25,12 +25,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * delegated to vanilla untouched.
  */
 @Mixin(FirstPersonHandsAndItemsRenderer.class)
-public class FirstPersonHandsRendererMixin {
+public abstract class FirstPersonHandsRendererMixin {
 	@Unique
 	private static final float CHARGE_WINDUP_TIME = 20.0F; // ticks to reach full wind-up
 
 	@Invoker("renderPlayerHand")
-	private abstract void modid$invokeRenderPlayerHand(PoseStack poseStack, SubmitNodeCollector collector,
+	protected abstract void modid$invokeRenderPlayerHand(PoseStack poseStack, SubmitNodeCollector collector,
 			int renderId, HumanoidArm arm, PlayerRenderState playerState);
 
 	@Inject(
